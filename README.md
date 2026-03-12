@@ -10,7 +10,6 @@ by Aditya J.
 
 </div>
 
-
 **Abstract:** In distributed systems and cryptography, generating mutually coprime sets typically relies on probabilistic rejection sampling, an approach bounded by unpredictable loops. This paper explores an $O(1)$ deterministic alternative utilizing p-adic valuations and primorial offsets, transforming coprime generation from a trial-and-error search into a pure arithmetic geometry solution, reducing algorithmic complexity to a strict, single-pass operation.
 
 ## 1. The Euclidean Algorithm Rabbit Hole
@@ -192,11 +191,37 @@ From an engineering perspective, replacing a probabilistic search with a determi
 
 Finding a practical application for pure number theory concepts like p-adic metrics has been an incredibly rewarding engineering exercise. It proves that sometimes the best way to optimize a loop isn't to write better code, it's to use math to prove the loop shouldn't exist in the first place.
 
-## 7. Empirical Proof: Measuring Algorithmic Complexity
+## 7. The Microarchitectural Impact: Why $O(1)$ Matters on GPUs
+
+While the mathematical elegance of an $O(1)$ algorithm is satisfying, modern software engineering, especially at the scale of high-performance computing and machine learning, requires a deep understanding of how code executes on the metal. When deploying massive-scale number theory to Single Instruction, Multiple Threads (SIMT) architectures like GPUs, the difference between a stochastic loop and a deterministic mapping becomes a microarchitectural necessity.
+
+### 7.1 The SIMT / Warp Divergence Catastrophe
+
+Modern GPU architectures achieve massive data throughput by managing thousands of concurrent threads grouped into "warps" (typically 32 threads) that execute operations in strict lockstep. The primary performance bottleneck in these architectures is branch divergence.
+
+When a programmed conditional statement like a traditional probabilistic `while` loop is encountered, threads evaluate the condition independently. If 31 threads successfully find a coprime integer instantly, but one single "unlucky" thread falls into a massive coprime desert (like the 26-iteration spike seen in the benchmark graph below), the hardware warp scheduler must serialize the execution. The 31 successfully finished threads must sit perfectly idle, masked out by branch predication, wasting valuable processor clock cycles while waiting for the divergent thread to trigger a synchronization reconvergence.
+
+By mathematically transforming the search into a pure arithmetic mapping, the p-adic deterministic method eliminates conditional branching entirely. Every thread executes a straight-line sequence of Arithmetic Logic Unit (ALU) operations, allowing the GPU to maintain a 100% active mask and perfect lockstep execution.
+
+### 7.2 Memory Coalescing (AoS vs. SoA)
+
+Handling massive parameters, such as the 1024-bit integers required for cryptography, introduces severe memory bandwidth challenges. Modern GPUs achieve peak bandwidth only when the memory addresses accessed by every thread within a warp fall within the same aligned segment of global memory (typically 128-byte cache lines).
+
+If 32 threads attempt to write 1024-bit (128-byte) integers using a naive Array of Structures (AoS) layout, the hardware memory controller views this as a heavily strided access pattern. This breaks coalescing rules entirely, forcing the memory subsystem to issue dozens of separate transactions instead of a single bulk transfer. To solve this, the algorithm requires a structural data transposition into a Structure of Arrays (SoA). In this layout, all 32 threads in a warp write consecutive 32-bit words concurrently. This perfectly aligns with a single 128-byte L1 cache line transaction, ensuring maximum memory bandwidth saturation.
+
+### 7.3 The Reality of Register Pressure
+
+It is important to acknowledge that executing arbitrary-precision number theory on a GPU is not a flawless magic bullet. The most pressing hardware limitation is register pressure.
+
+Native hardware does not support 1024-bit registers. A single 1024-bit integer must be represented as an array of 32 individual 32-bit limbs distributed across the physical registers of a CUDA thread. Processing the p-adic valuation and primorial multiples requires tracking these limbs alongside carry-propagation flags, easily pushing the register count past 64 registers per thread.
+
+An NVIDIA streaming multiprocessor (SM) has a hard physical limit of 65,536 registers. If a kernel demands 64 registers per thread, the maximum number of threads the SM can physically schedule drops to 1,024, capping the theoretical hardware occupancy at roughly 50%. Understanding this trade-off is critical: while the algorithm scales to $O(1)$ infinitely in theory, rigid hardware registers place a hard cap on concurrent throughput.
+
+## 8. Empirical Proof: Measuring Algorithmic Complexity
 
 Wall-clock time is a dirty metric prone to hardware noise, OS background processes, and thermal throttling. To prove the $O(1)$ microarchitectural benefits with absolute mathematical certainty, I benchmarked the exact number of operations (loop iterations) required by both methods, completely isolating the test from hardware-level latency.
 
-The benchmark was run for 500 test iterations generating 512-bit coprime triplets:
+The benchmark was run for 500 test iterations generating cryptographic-scale 1024-bit coprime triplets:
 
 ```Python
 import random
@@ -204,7 +229,7 @@ import math
 import matplotlib.pyplot as plt
 
 # --- 1. The Industry Standard: Probabilistic Approach ---
-def generate_probabilistic_triplet(bit_length=256):
+def generate_probabilistic_triplet(bit_length):
     triplet = []
     lower_bound = 2**(bit_length - 1)
     upper_bound = 2**bit_length - 1
@@ -220,7 +245,7 @@ def generate_probabilistic_triplet(bit_length=256):
     return iterations
 
 # --- 2. Benchmarking Logic ---
-def run_iteration_benchmark(test_runs=500, bit_length=256):
+def run_iteration_benchmark(test_runs, bit_length):
     prob_iterations = []
     det_iterations = []
 
@@ -234,7 +259,7 @@ def run_iteration_benchmark(test_runs=500, bit_length=256):
     return prob_iterations, det_iterations
 
 # --- 3. Plotting the Results ---
-p_iters, d_iters = run_iteration_benchmark(500, 512)
+p_iters, d_iters = run_iteration_benchmark(500, 1024)
 
 plt.figure(figsize=(10, 5))
 plt.plot(p_iters, label='Probabilistic (While Loop Iterations)', color='red', alpha=0.8)
