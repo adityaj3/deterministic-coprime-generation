@@ -47,11 +47,13 @@ jobs:
         working-directory: build
         run: ./coprime_bench
 
-      - name: Run Telemetry Profiler & Generate Dashboard
+      - name: Run Telemetry Profiler
         working-directory: build
-        run: |
-          ./coprime_inspector > telemetry.json
-          python3 ../tools/plot_telemetry.py
+        run: ./coprime_inspector
+
+      - name: Render Telemetry Dashboard
+        working-directory: build
+        run: python3 ../tools/plot_telemetry.py
 
       - name: Upload Benchmark Dashboard Artifact
         uses: actions/upload-artifact@v4
