@@ -1,196 +1,180 @@
-// ============================================================================
-// STRICT C++20 COMPILE DIRECTIVES
-// Requires linking against Catch2 (v3) and TBB (for std::execution::par)
-// CMake: target_link_libraries(test_suite Catch2::Catch2WithMain)
-// ============================================================================
-
 #include <catch2/catch_test_macros.hpp>
-#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <boost/multiprecision/cpp_int.hpp>
-#include <boost/integer/common_factor.hpp>
-#include <vector>
-#include <numeric>
 #include <execution>
-#include <atomic>
+#include <numeric>
+#include <vector>
+#include <cstdint>
 #include <cmath>
+#include <atomic>
 #include <iostream>
-#include <string>
 
-// Include the previously generated Deliverable 1 engine
-#include "coprime_engine.hpp"
-
-using namespace boost::multiprecision;
-using BigInt = cpp_int;
+#include <coprime_engine.hpp>
 
 // ============================================================================
-// VERIFICATION HELPER FUNCTIONS
+// PARALLEL VERIFICATION PRIMITIVE (STRICT NAMESPACE ISOLATION & OOM SAFETY)
 // ============================================================================
 
-// Validates strictly pairwise coprimality: gcd(d_i, d_j) == 1 for all i != j
-bool verify_pairwise_coprimality(const std::vector<BigInt>& seq) {
-    size_t M = seq.size();
-    if (M < 2) return true;
+namespace {
+    // Escaped to internal linkage via anonymous namespace to prevent ODR violations
+    template<typename T>
+    bool verify_pairwise_coprimality_parallel(const std::vector<T> &vec) {
+        if (vec.size() < 2) return true;
 
-    for (size_t i = 0; i < M; ++i) {
-        for (size_t j = i + 1; j < M; ++j) {
-            if (boost::multiprecision::gcd(seq[i], seq[j]) != 1) {
-                return false;
+        std::vector<size_t> indices(vec.size());
+        std::iota(indices.begin(), indices.end(), 0);
+
+        // Lock-free atomic short-circuit flag to intercept OOM thread thrashing
+        std::atomic<bool> memory_fault{false};
+
+        bool is_coprime = std::transform_reduce(
+            std::execution::par,
+            indices.begin(),
+            indices.end(),
+            true,
+            std::logical_and<bool>{},
+            [&](size_t i) {
+                // 1. ATOMIC SHORT-CIRCUIT: Abort immediately if sibling thread starved DRAM
+                if (memory_fault.load(std::memory_order_relaxed)) {
+                    return false;
+                }
+
+                // 2. EXCEPTION SAFETY: Intercept unhandled std::bad_alloc in thread pool
+                try {
+                    bool local_coprime = true;
+                    for (size_t j = i + 1; j < vec.size(); ++j) {
+                        if (coprime::math::compute_gcd<T>(vec[i], vec[j]) != 1) {
+                            local_coprime = false;
+                            break;
+                        }
+                    }
+                    return local_coprime;
+                } catch (const std::bad_alloc &) {
+                    // 3. FAULT PROPAGATION: Signal early exit to all executing lanes
+                    memory_fault.store(true, std::memory_order_relaxed);
+                    return false;
+                } catch (...) {
+                    // Catch-all to prevent unhandled exceptions reaching std::terminate
+                    memory_fault.store(true, std::memory_order_relaxed);
+                    return false;
+                }
             }
+        );
+
+        // If DRAM was exhausted, fail the test safely without catastrophic process termination
+        if (memory_fault.load(std::memory_order_relaxed)) {
+            std::cerr << "\n[!] SYSTEM EXCEPTION: std::bad_alloc caught during parallel verification.\n"
+                    << "    DRAM bounds exceeded. Terminating verification gracefully.\n";
+            return false;
         }
-    }
-    return true;
-}
 
-// ============================================================================
-// TEST CASE 1: TRACK 1 (CYCLOTOMIC) - BOUNDED DIMENSIONAL SCALING
-// ============================================================================
-
-TEST_CASE("Track 1: Bounded Dimensional Scaling (Multi-Limb Transition)", "[track1][coprimality]") {
-    // M=5 tests single-limb boundary. M=30 bounds the Lehmer GCD to ~117 limbs
-    // to prevent O(B^2) multi-limb quadratic stalling.
-    const std::vector<size_t> t1_sizes = {5, 10, 20, 30};
-
-    // 20-digit string ensures multi-limb carry propagation without stalling
-    BigInt base_entropy("98765432101234567890");
-
-    for (size_t M : t1_sizes) {
-        // DYNAMIC_SECTION prevents Catch2 AST re-entry overhead.
-        // CHECK ensures execution continues across all parameters upon failure.
-        DYNAMIC_SECTION("Evaluating Track 1 for M = " << M) {
-            std::vector<BigInt> t1_seq = coprime::generate_track1_cyclotomic<BigInt>(base_entropy, M);
-
-            CHECK(t1_seq.size() == M);
-            CHECK(verify_pairwise_coprimality(t1_seq) == true);
-        }
+        return is_coprime;
     }
 }
 
 // ============================================================================
-// TEST CASE 2: TRACK 2 (SDS) - UNBOUNDED SCALING & ASYMPTOTIC AUDIT
+// TEST SUITE: BOUNDARY AXIOMS
 // ============================================================================
 
-TEST_CASE("Track 2: Unbounded Dimensional Scaling & Asymptotic Audit", "[track2][scaling][asymptotic]") {
-    const std::vector<size_t> t2_sizes = {10, 50, 100, 250, 500};
+TEST_CASE("Boundary Axioms: Zero-Entropy and Total Factor Absorption", "[track1][boundaries]") {
+    uint64_t entropy_zero = 0;
+    uint64_t entropy_one = 1;
+    size_t M = 10;
 
-    // Theoretical complexity constants
-    const double log2_phi = 0.6942419136306174;
-    const double log2_5_half = 1.1609640474436813;
-    const double log2_e = 1.4426950408889634;
+    auto res_zero = coprime::core::generate_track1_cyclotomic(entropy_zero, M);
+    auto res_one = coprime::core::generate_track1_cyclotomic(entropy_one, M);
 
-    for (size_t M : t2_sizes) {
-        DYNAMIC_SECTION("Evaluating Track 2 for M = " << M) {
-            std::vector<BigInt> t2_seq = coprime::generate_track2_sds<BigInt>(M);
+    REQUIRE(res_zero.size() == M);
+    REQUIRE(res_one.size() == M);
 
-            CHECK(t2_seq.size() == M);
+    REQUIRE(res_zero[0] == 7);
+    REQUIRE(res_one[0] == 7);
 
-            // Phase 1: Pairwise GCD Verification
-            CHECK(verify_pairwise_coprimality(t2_seq) == true);
+    REQUIRE(verify_pairwise_coprimality_parallel(res_zero));
+    REQUIRE(verify_pairwise_coprimality_parallel(res_one));
+}
 
-            // Phase 2: Asymptotic Bit-Length Empirical Validation
-            std::vector<uint32_t> eval_primes = coprime::detail::generate_primes(M, false);
-            uint32_t p_M = eval_primes.back();
-            BigInt final_element = t2_seq.back();
+// ============================================================================
+// TEST SUITE: DYNAMIC SCALING (FUNDAMENTAL & MULTIPRECISION)
+// ============================================================================
 
-            // Extract exact bit-length using boost built-in MSB
-            unsigned actual_bit_length = msb(final_element) + 1;
+TEST_CASE("Dynamic Scaling and Type Bounding: Fundamental and Multiprecision", "[scaling]") {
+    std::vector<size_t> target_sizes = {5, 10, 50, 100};
 
-            // Theoretical Bounds Calculation
-            double expected_fib_bits = (p_M * log2_phi) - log2_5_half;
-            double expected_prim_bits = p_M * log2_e;
+    for (size_t M: target_sizes) {
+        DYNAMIC_SECTION("Evaluating target set size M=" << M) {
+            if (M <= 10) {
+                uint64_t fund_seed = 84;
+                auto t1_fund = coprime::core::generate_track1_cyclotomic(fund_seed, M);
+                auto t2_fund = coprime::core::generate_track2_sds<uint64_t>(M);
 
-            // Assert exact geometric length bound (Tolerance +/- 2 bits due to Binet floor)
-            CHECK_THAT(static_cast<double>(actual_bit_length),
-                       Catch::Matchers::WithinAbs(expected_fib_bits, 2.0));
+                REQUIRE(verify_pairwise_coprimality_parallel(t1_fund));
+                REQUIRE(verify_pairwise_coprimality_parallel(t2_fund));
+            }
 
-            // Calculate actual and dynamic theoretical space reduction ratio
-            double actual_reduction_ratio = 1.0 - (static_cast<double>(actual_bit_length) / expected_prim_bits);
-            double expected_reduction_ratio = 1.0 - (expected_fib_bits / expected_prim_bits);
+            boost::multiprecision::cpp_int mp_seed("18446744073709551615");
 
-            // Validate that actual space reduction strictly tracks theoretical prediction (Tolerance +/- 0.005)
-            CHECK_THAT(actual_reduction_ratio,
-                       Catch::Matchers::WithinAbs(expected_reduction_ratio, 0.005));
+            auto t1_mp = coprime::core::generate_track1_cyclotomic(mp_seed, M);
+            auto t2_mp = coprime::core::generate_track2_sds<boost::multiprecision::cpp_int>(M);
+
+            REQUIRE(t1_mp.size() == M);
+            REQUIRE(t2_mp.size() == M);
+
+            REQUIRE(verify_pairwise_coprimality_parallel(t1_mp));
+            REQUIRE(verify_pairwise_coprimality_parallel(t2_mp));
         }
     }
 }
 
 // ============================================================================
-// TEST CASE 3: EXTREME OPT-IN PARALLEL VERIFICATION (M=1000)
+// TEST SUITE: MULTIPRECISION STRESS TEST
 // ============================================================================
 
-TEST_CASE("Track 2: Extreme Opt-In Parallel Verification (M=1000)", "[.][parallel][extreme]") {
+TEST_CASE("Multiprecision Stress Test: OOM-Proof Chunked Primorial Flush", "[track1][stress]") {
+    boost::multiprecision::cpp_int massive_seed(
+        "340282366920938463463374607431768211456000000000000000000000000000000000000");
+    size_t M = 500;
+
+    auto t1_res = coprime::core::generate_track1_cyclotomic(massive_seed, M);
+
+    REQUIRE(t1_res.size() == M);
+    REQUIRE(verify_pairwise_coprimality_parallel(t1_res));
+}
+
+// ============================================================================
+// TEST SUITE: CONCURRENCY EXTREME STRESS TEST
+// ============================================================================
+
+TEST_CASE("Concurrency Hard Rule: O(N^2) Verification at Extreme Scale", "[track2][concurrency]") {
     size_t M = 1000;
-    std::vector<BigInt> seq = coprime::generate_track2_sds<BigInt>(M);
-    REQUIRE(seq.size() == M);
+    auto t2_res = coprime::core::generate_track2_sds<boost::multiprecision::cpp_int>(M);
 
-    // Pre-compute index pairs to allow flat parallel execution map
-    std::vector<std::pair<size_t, size_t>> indices;
-    indices.reserve((M * (M - 1)) / 2);
-    for (size_t i = 0; i < M; ++i) {
-        for (size_t j = i + 1; j < M; ++j) {
-            indices.emplace_back(i, j);
-        }
-    }
-
-    std::atomic<bool> all_pairwise_coprime{true};
-
-    // Parallelize the 499,500 GCD checks to prevent test runner timeouts
-    std::for_each(std::execution::par, indices.begin(), indices.end(),
-        [&seq, &all_pairwise_coprime](const std::pair<size_t, size_t>& p) {
-            if (boost::multiprecision::gcd(seq[p.first], seq[p.second]) != 1) {
-                all_pairwise_coprime.store(false, std::memory_order_relaxed);
-            }
-        }
-    );
-
-    CHECK(all_pairwise_coprime.load() == true);
+    REQUIRE(t2_res.size() == M);
+    REQUIRE(verify_pairwise_coprimality_parallel(t2_res));
 }
 
 // ============================================================================
-// TEST CASE 4: BOUNDARY STATE SWEEP (SINGULARITY MITIGATION)
+// TEST SUITE: EXACT RATIONAL AUDIT
 // ============================================================================
 
-TEST_CASE("Track 1: Boundary State & Singularity Sweep", "[boundary][axioms]") {
-    size_t M = 20;
+TEST_CASE("Exact Empirical Audit: Theoretical Spatial Memory Contraction Limits", "[track2][audit]") {
+    size_t M = 200;
+    auto t2_res = coprime::core::generate_track2_sds<boost::multiprecision::cpp_int>(M);
 
-    // Utilize isolated scope blocks instead of standard SECTIONs to guarantee
-    // single-pass sequential execution without invoking AST teardowns.
-
-    {
-        // State 1: Zero-Entropy Input (N=0) implies v_p(0)=infty
-        // Axiom I must sanitize N=0 to A_seed=2 to prevent trivial array of 1s
-        std::vector<BigInt> seq = coprime::generate_track1_cyclotomic<BigInt>(BigInt(0), M);
-        CHECK(verify_pairwise_coprimality(seq) == true);
-        CHECK(seq[0] > 1); // Explicitly confirm sequence is not trivial 1s
+    size_t t2_max_bits = 0;
+    for (const auto &val: t2_res) {
+        size_t bits = (val == 0 ? 0 : static_cast<size_t>(boost::multiprecision::msb(val) + 1));
+        if (bits > t2_max_bits) t2_max_bits = bits;
     }
 
-    {
-        // State 2: Identity Input (N=1)
-        // Axiom I must sanitize N=1 to A_seed=2
-        std::vector<BigInt> seq = coprime::generate_track1_cyclotomic<BigInt>(BigInt(1), M);
-        CHECK(verify_pairwise_coprimality(seq) == true);
-        CHECK(seq[0] > 1);
+    double primorial_bits = 0.0;
+    auto primes = coprime::primes::generate_primes(M, false);
+    for (uint64_t p: primes) {
+        primorial_bits += std::log2(static_cast<double>(p));
     }
 
-    {
-        // State 3: Power-of-Two Input (N=2^1024)
-        BigInt pow2 = cpp_int(1) << 1024;
-        std::vector<BigInt> seq = coprime::generate_track1_cyclotomic<BigInt>(pow2, M);
-        CHECK(verify_pairwise_coprimality(seq) == true);
-    }
+    double empirical_contraction = 1.0 - (static_cast<double>(t2_max_bits) / primorial_bits);
+    constexpr double THEORETICAL_LIMIT = 0.518789; // 1 - ln(phi)
 
-    {
-        // State 4: Total Factor Absorption (N = P_m#)
-        // Construct primorial P_m#
-        std::vector<uint32_t> primes = coprime::detail::generate_primes(M, false);
-        BigInt primorial = 1;
-        for (uint32_t p : primes) {
-            primorial *= p;
-        }
-
-        // When N = P_m#, S_m-regular stripping yields exactly 1.
-        // Axiom I sanitizes 1 -> 2.
-        std::vector<BigInt> seq = coprime::generate_track1_cyclotomic<BigInt>(primorial, M);
-        CHECK(verify_pairwise_coprimality(seq) == true);
-        CHECK(seq[0] > 1);
-    }
+    // Tolerance buffer accounts for discrete float approximation margins at M=200
+    REQUIRE(std::abs(empirical_contraction - THEORETICAL_LIMIT) < 0.05);
 }

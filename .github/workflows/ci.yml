@@ -1,0 +1,60 @@
+name: C++20 Coprime Engine CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler:
+          - cxx: g++-13
+            cc: gcc-13
+            install: g++-13
+          - cxx: clang++-16
+            cc: clang-16
+            install: clang-16
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libboost-all-dev libtbb-dev python3-matplotlib ${{ matrix.compiler.install }}
+
+      - name: Configure CMake
+        env:
+          CXX: ${{ matrix.compiler.cxx }}
+          CC: ${{ matrix.compiler.cc }}
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Engine and Executables
+        run: |
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Execute CTest (Unit Tests & Sanitizers)
+        working-directory: build
+        run: ctest -C Release --output-on-failure
+
+      - name: Run Micro-Benchmarks
+        working-directory: build
+        run: ./coprime_bench
+
+      - name: Run Telemetry Profiler & Generate Dashboard
+        working-directory: build
+        run: |
+          ./coprime_inspector > telemetry.json
+          python3 ../tools/plot_telemetry.py
+
+      - name: Upload Benchmark Dashboard Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-dash-${{ matrix.compiler.cc }}
+          path: docs/assets/benchmark_dash.svg

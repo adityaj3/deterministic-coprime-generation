@@ -1,0 +1,18 @@
+# Ignore Build Directories
+/build/
+/cmake-build-debug/
+/Testing/
+
+# Ignore Executables & Outputs
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+telemetry.json
+
+# Ignore IDE & OS Metadata
+.idea/
+.vscode/
+.DS_Store
+*.swp
