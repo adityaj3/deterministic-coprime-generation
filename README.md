@@ -182,6 +182,23 @@ $$U(x)\Phi_n(x) + V(x)\Phi_m(x) = 1$$
 
 Evaluating this exact resultant identity at the integer basis $x = A_{\text{seed}}$ yields $U(A)\Phi_n(A) + V(A)\Phi_m(A) = 1$. Thus, $\gcd(\Phi_n(A), \Phi_m(A)) = 1$, preserving integer domain boundaries seamlessly.
 
+**Asymptotic Work Complexity Analysis under Fast Multi-Precision Arithmetic:** \
+To establish a physically falsifiable performance boundary, we analyze the computational complexity of the Engine against Naive Rejection Sampling under symmetric multi-precision optimizations (Karatsuba multiplication $\mathcal{O}(B^{\log_2 3}) \approx \mathcal{O}(B^{1.585})$ and Schönhage fast GCD $\mathcal{O}(B^{1.585} \log B)$ ).
+
+Let $M$ be the target set size, and let $B = \mathcal{O}(M \ln M)$ represent the asymptotic element bit-width. The total computational work of Engine Track 1 is bounded by:
+
+$$W_{\text{Engine}}(M) = \sum_{i=1}^M \mathcal{O}\left((i \cdot \ln i)^{1.585}\right) \approx \mathcal{O}\left(M^{2.585} \cdot \ln^{1.585} M\right)$$
+
+Conversely, Naive Rejection executes $\frac{M(M-1)}{2} = \mathcal{O}(M^2)$ pairwise checks. Granted Schönhage fast GCD, its total workload scales as:
+
+$$W_{\text{Naive}}(M) = \mathcal{O}(M^2) \times \mathcal{O}\left((M \cdot \ln M)^{1.585} \cdot \log(M \cdot \ln M)\right) = \mathcal{O}\left(M^{3.585} \ln^{1.585} M \log(M \ln M)\right)$$
+
+Taking the ratio isolates the relative asymptotic advantage factor:
+
+$$\frac{W_{\text{Naive}}(M)}{W_{\text{Engine}}(M)} = \frac{\mathcal{O}\left(M^{3.585} \cdot \ln^{1.585} M \cdot \log(M \cdot \ln M)\right)}{\mathcal{O}\left(M^{2.585} \cdot \ln^{1.585} M\right)} = \mathcal{O}(M \log M)$$
+
+Even when Naive Euclidean sampling is artificially granted recursive Schönhage fast GCD algorithms, the $0$-GCD Forward Algebraic Mapping strictly preserves a scaling performance advantage factor of $\mathcal{O}(M \log M)$.
+
 ### Section 3: Track 2 Strong Divisibility Sequence Proof
 
 A sequence $\left\\{U\_n\right\\}\_{n \ge 1}$ is a Strong Divisibility Sequence (SDS) if $\gcd(U\_n, U\_m) = U\_{\gcd(n,m)}$ for all $n,m \ge 1$. The Lucas sequence evaluated at $P=1, Q=-1$ yields the Fibonacci sequence $F_n$.
