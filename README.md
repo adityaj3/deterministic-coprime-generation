@@ -114,7 +114,7 @@ The engine's performance profile is governed not merely by theoretical algorithm
 ```
 
 #### A. Cold-Start Latency & The Small-Set Inversion ($M \le 10$)
-At minimal scales ($M \le 10$), the Naive rejection sampler executes purely within hardware CPU registers and L1 data cache using native 64-bit integer instructions. Conversely, Engine Track 1 initializes dynamic multi-limb buffers via `boost::multiprecision::cpp_int`. The heap allocation and metadata initialization overhead induce a brief latency penalty ($1.9\,\mu\text{s}$ vs. $1.4\,\mu\text{s}$, or a $0.7\times$ speedup inversion).
+At minimal scales ($M \le 10$), the Naive rejection sampler executes purely within hardware CPU registers and L1 data cache using native 64-bit integer instructions. Conversely, Engine Track 1 initializes dynamic multi-limb buffers via `boost::multiprecision::cpp_int`. The heap allocation and metadata initialization overhead induce a brief latency penalty ($1.9\\,\mu\text{s}$ vs. $1.4\\,\mu\text{s}$, or a $0.7\times$ speedup inversion).
 
 #### B. The Arithmetic Crossover ($M = 50$)
 As set size reaches $M = 50$, the Naive sampler executes $1,518$ cumulative multi-precision `idiv` GCD operations (exceeding the theoretical minimum of $\frac{M(M-1)}{2} = 1,225$ checks due to candidate rejections). In contrast, Track 1 evaluates generalized cyclotomic polynomials directly via exponentiation-by-squaring, engaging sub-quadratic Karatsuba multiplication pathways. At this threshold, the Engine permanently overtakes the Naive baseline ($2.4\times$ speedup, $469.3\text{ Mbps}$).
@@ -136,7 +136,7 @@ At extreme scales ($M = 10,000$), the cyclotomic mapping produces individual cop
 
 ### 6. Comprehensive Defense Against Non-Rejection Sampling Alternatives
 
-Critics frequently question why the engine is necessary given existing alternative generation paradigms. Below is the formal refutation of three alternative approaches:
+It can be questioned why the engine is necessary given existing alternative generation paradigms. Below is the formal refutation of three alternative approaches:
 
 #### Alternative A: Probabilistic Primes + GCD Filtering (Randomized Pipelines)
 * **Mechanism:** Generating a set of large random primes via Miller-Rabin primality testing, followed by pairwise GCD checks to ensure coprimality.
